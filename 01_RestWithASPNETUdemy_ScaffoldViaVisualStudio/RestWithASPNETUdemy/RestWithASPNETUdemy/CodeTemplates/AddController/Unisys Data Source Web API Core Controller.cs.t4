@@ -1,0 +1,1686 @@
+<# 
+   /******************************************************************************* 
+    Copyright © Unisys Corporation.                                                 
+    All rights reserved.                                                            
+   *******************************************************************************/
+   /*
+	Web API Core Scaffolder.
+   */
+#>
+<#@ Template Language="C#" HostSpecific="True" #>
+<#@ Output Extension="cs" #>
+<#@ import namespace="System.Collections.Generic" #>
+<#@ assembly name="Unisys.Common.Ide" #>
+<#@ import namespace="Unisys.Common.Orchestration" #>
+<#@ assembly name="Unisys.Common.EISConnectors" #>
+<#@ import namespace="Unisys.Common.EISConnectors" #>
+<#@ import namespace="Unisys.Common.Orchestration" #>
+<#@ import namespace="System.IO" #>
+<#@ assembly name="System.IO" #>
+<#@ import namespace="Newtonsoft.Json" #>
+<#@ assembly name="Newtonsoft.Json" #>
+<#@ import namespace="System.Linq" #>
+<#@ assembly name="System.Linq" #>
+<#@ assembly name="Unisys.Common.Shared" #>
+<#@ import namespace="Unisys.Common.Shared" #>
+<#@ import namespace="System.Text" #>
+
+<#@ CleanupBehavior processor="T4VSHost" CleanupAfterProcessingtemplate="true" #>
+<#
+/*
+    Parameters:
+        ModelName: Namespace of the Datasource project
+        ControllerNamespace: Namespace of the controller
+        FLowPath: Path to the Orchestration xml
+        Controllername: Class name for the controller
+        ClientMessagePath: Directory of client messages
+        ServerMessagePath: Directory of server messages
+        InputRecordList: Comma separated list of all Input Client Messages in the Datasource
+*/
+#>
+<#@ parameter type="System.String" name="ModelName" #>
+<#@ parameter type="System.String" name="ControllerNamespace" #>
+<#@ parameter type="System.String" name="FlowPath" #>
+<#@ parameter type="System.String" name="Controllername" #>
+<#@ parameter type="System.String" name="ClientMessagesPath" #> 
+<#@ parameter type="System.String" name="ServerMessagesPath" #> 
+<#@ parameter type="System.String" name="InputRecordList" #>
+<#@ parameter type="System.String" name="IsABSEAE" #>
+<#@ parameter type="System.String" name="GenerateSpecificListOperations" #>
+<#@ parameter type="System.String" name="ScaffoldConfigurationPath" #>
+using System;
+using System.Collections.Generic;
+using System.Collections.Specialized;
+using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using System.Runtime.Serialization;
+using System.Net.Http;
+using System.IO;
+using System.Data;
+using System.Web;
+using <#= ModelName #>;
+using Unisys;
+using Swashbuckle.AspNetCore.Annotations;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Serialization;
+using Unisys.Common.Shared;
+
+<#
+    // Read scafolder configuration file
+
+    Dictionary<string, string> scaffoldConfiguration = new Dictionary<string, string>();
+    try
+    {
+        // Read Swagger configuration
+        using (StreamReader streamReader = new StreamReader(ScaffoldConfigurationPath))
+        {
+            string json = streamReader.ReadToEnd();
+            scaffoldConfiguration = JsonConvert.DeserializeObject<Dictionary<string, string>>(json);
+        }
+    }
+    catch(Exception ex)
+    {
+          Logging.WriteLogs(Logging.LogLevel.Error, ex.Message);
+    }
+
+
+    // Get the Orchestration by deserializing the XML
+    Unisys.Common.Orchestration.Flow flow = Unisys.Common.Orchestration.Flow.Deserialize(FlowPath); 
+
+    string  config_Produces = "application/json";
+    string  config_Consumes = "application/json";
+    bool    config_GenerateABSuiteListActions = false;
+    bool    config_IncludeAllClientMessages = true;
+    long     config_RequestSizeLimit = -1 ;
+    bool    config_RequireHTTPS = false ;
+    string  config_Route=  "api/[controller]";
+    bool    config_SessionRequired = true ;
+    bool    config_ValidateAntiForgeryToken = false;
+
+
+    string config_binding = "Body";
+    string config_verb = "Post";
+	string SWopID = "";
+
+    // Take based on configuration values  
+    if(!string.IsNullOrEmpty(flow.Produces))
+    {
+        config_Produces = flow.Produces.Replace(",","\",\"").Replace(" ","");
+    }
+
+    if(!string.IsNullOrEmpty(flow.Consumes))
+    {
+        config_Consumes = flow.Consumes.Replace(",","\",\"").Replace(" ","");
+    }
+
+	if(scaffoldConfiguration.ContainsKey("GenerateABSuiteListActions"))
+    {
+         bool.TryParse(scaffoldConfiguration["GenerateABSuiteListActions"], out config_GenerateABSuiteListActions);
+    }
+    
+	if(scaffoldConfiguration.ContainsKey("IncludeAllClientMessages"))
+    {
+         bool.TryParse(scaffoldConfiguration["IncludeAllClientMessages"], out  config_IncludeAllClientMessages);
+    }
+
+	if(!string.IsNullOrEmpty(flow.RequestSizeLimit))
+    {
+         long.TryParse(flow.RequestSizeLimit, out  config_RequestSizeLimit);
+    }
+
+     config_RequireHTTPS = flow.RequireHttps;
+
+     if(scaffoldConfiguration.ContainsKey("Route"))
+    {
+        config_Route = scaffoldConfiguration["Route"];
+    }
+
+	if(scaffoldConfiguration.ContainsKey("SessionRequired"))
+    {
+        bool.TryParse(scaffoldConfiguration["SessionRequired"], out  config_SessionRequired);
+    }
+
+    config_ValidateAntiForgeryToken = flow.ValidateAntiForgeryToken;
+
+
+    bool isABSEAE = false;
+	
+	// Set the flag to indicate an ABS/EAE datasource
+    if (IsABSEAE.Equals("True", StringComparison.CurrentCultureIgnoreCase))
+		isABSEAE = true;
+
+    // list of all input client messages
+    List<string> InList = new List<string>(InputRecordList.Split(','));
+
+	// AB Suite Only: Collection of all lists found for the application
+	List<ListDetailsItem> ABSuiteApplicationLists  = new List<ListDetailsItem>();
+#>
+
+namespace <#= ControllerNamespace #>.Controllers
+{
+
+    [ApiExplorerSettings(IgnoreApi = false)]
+    public partial class <#= Controllername #>Controller : <#= Controllername #>ControllerBase 
+    {
+        public <#= Controllername #>Controller(Microsoft.Extensions.Configuration.IConfiguration config) : base(config) { }
+    }
+
+<#  if (config_ValidateAntiForgeryToken) { #>
+    [ValidateAntiForgeryToken]
+<#  } #>
+    [Consumes("<#= config_Produces #>")]
+    [Produces("<#= config_Consumes #>")]
+    <# List<KeyValuePair<string, string>> replies = GetAllResponseTypes(flow);
+                foreach (KeyValuePair<string, string> kvp in replies) {
+        #><#if(kvp.Value.StartsWith("Unisys."))
+    {#>[ProducesResponseType(<#= kvp.Key #>, Type = typeof(<#= kvp.Value #>))]
+    <#}else
+    {#>[ProducesResponseType(<#= kvp.Key #>, Type = typeof(<#= ModelName #>.<#= kvp.Value #>))]
+    <#}#><#}#>
+<#  if (config_RequireHTTPS) { #>[RequireHttps]
+<#  } #>
+<#  if (config_RequestSizeLimit>0) { #>
+    [RequestSizeLimit(<#= config_RequestSizeLimit #>)]
+<#  } #><#  if (!string.IsNullOrWhiteSpace(config_Route)) { #>
+[Route("<#=config_Route#>")]
+<#    }  #>
+<#  if (!flow.AllowAnonymous) { #>
+    <#= GetAuthorizeAttribute(flow.Roles, flow.Policy, flow.Schemes) #>
+<#  } #>
+    [ApiController]
+    [ApiExplorerSettings(IgnoreApi = true)]
+    public class <#= Controllername #>ControllerBase : ControllerBase
+    {
+       List<KeyValuePair<int, string>> globalResponseTypes = new  List<KeyValuePair<int, string>>();
+
+        #region Host Connection
+
+        private bool Sessionless = <#= (!config_SessionRequired).ToString().ToLower() #>;
+        private Microsoft.Extensions.Configuration.IConfiguration configuration;
+
+        public <#= Controllername #>ControllerBase(Microsoft.Extensions.Configuration.IConfiguration config)
+        {
+            configuration = config;
+            System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+
+             // Add Gloabl Response types, to set response code based on type  
+            <# StringBuilder responseTypesCollection =  new StringBuilder();
+            foreach (KeyValuePair<string, string> kvp in replies) {
+                if(kvp.Value.StartsWith("Unisys."))
+                {
+                    responseTypesCollection.AppendLine("globalResponseTypes.Add(new KeyValuePair<int, string>(" + kvp.Key +",\"" + kvp.Value + "\"));");
+                }
+                else
+                {
+                  responseTypesCollection.AppendLine("globalResponseTypes.Add(new KeyValuePair<int, string>(" + kvp.Key +",\"" + ModelName  +"."+ kvp.Value + "\"));");
+                }
+                }
+            #>
+<#= responseTypesCollection.ToString()#>
+
+
+        }
+
+        /// <summary>
+        /// Creates and initializes the DataSource object for stateful application.
+        /// </summary>
+        protected virtual void InitializeSession()
+        {
+            var ISession = HttpContext.Session;
+            ListDictionary sessionInfo = new ListDictionary();
+
+            sessionInfo["sessionID"] = ISession.Id;
+            // Must set something for session to exist
+            ISession.Set("abc",new byte[] { 1 });
+
+			string remoteIP = Request.HttpContext.Connection.RemoteIpAddress.ToString();
+            if (!remoteIP.Contains("%") && !remoteIP.Equals("127.0.0.1") && !remoteIP.Equals("0:0:0:0:0:0:0:1") && !remoteIP.Equals("::1"))
+            {
+                string addr = remoteIP.Replace('.', '_');
+                addr = addr.Replace(':', '-');
+                sessionInfo["ClientAddress"] = addr;
+            }
+
+			Uri uriCodeBase = new Uri(System.Reflection.Assembly.GetExecutingAssembly().CodeBase);
+            Unisys.DataSource dataSource = new <#= ModelName #>.<#= ModelName #> (Path.GetDirectoryName(uriCodeBase.LocalPath.ToString()), sessionInfo, configuration);
+            Unisys.Session.DataSource(ISession.Id, dataSource);
+        }
+
+        /// <summary>
+        /// Initializes the DataSource object for a session-less application.
+		/// Calls the DataSource SessionlessInit method
+        /// </summary>
+        protected virtual Unisys.Message SessionlessInit()
+        {
+            var ISession = HttpContext.Session;
+
+			if (Unisys.Session.DataSource(ISession.Id) == null)
+                InitializeSession();
+
+			Unisys.DataSource dataSource = Unisys.Session.DataSource(ISession.Id);
+			return dataSource.SessionlessInit();
+        }
+
+        /// <summary>
+        ///  This method calls InvokeHost and sets appropriate HTTP Status codes
+        /// </summary>
+        /// <param name="requestModel"></param>
+        /// <param name="responsetypes"></param>
+        /// <returns></returns>
+        protected virtual IActionResult Invoke(Unisys.Message requestModel,  List<KeyValuePair<int, string>> responsetypes = null)
+        {
+          Unisys.Message responsemodel = null;
+            try
+            {
+                responsemodel = InvokeHost(requestModel);
+                bool specificReturnTypeFound = false;
+
+                // Set HTTP status code as per action method configuration
+                if (responsetypes != null)
+                {
+                    // Based on response types annotation set HTTP response codes
+                    var matchedResponseType = responsetypes.Where(response => response.Value.Equals(responsemodel.GetType().FullName)).ToList();
+
+                    if (matchedResponseType.Count() > 0)
+                    {
+                        responsemodel._ResponseCode = matchedResponseType[0].Key;
+                        specificReturnTypeFound = true;
+                    }
+                }
+
+                if (!specificReturnTypeFound)
+                {
+                    // If no action method configuration found, based on global configuration set Set HTTP status code
+                    var matchedResponseType = globalResponseTypes.Where(response => response.Value.Equals(responsemodel.GetType().FullName)).ToList();
+
+                    if (matchedResponseType.Count() > 0)
+                    {
+                        responsemodel._ResponseCode = matchedResponseType[0].Key;
+                    }
+                }
+
+				ObjectResult objectRslt = new ObjectResult(responsemodel);
+                objectRslt.StatusCode = responsemodel._ResponseCode;
+                return objectRslt;
+            }
+            catch (Exception ex)
+            {
+                Unisys.Common.Shared.Logging.WriteLogs(Logging.LogLevel.Error, "Exception :" + ex.Message);
+            }
+            return new ObjectResult(responsemodel);
+        
+        }
+
+       /// <summary>
+        /// Sends the message to the datasource and returns a response
+        /// </summary>   
+        protected virtual Message InvokeHost(Unisys.Message model)
+        {
+            var ISession = HttpContext.Session;
+			
+			if (Sessionless)
+            {
+				Unisys.Message InitResult = SessionlessInit();
+
+                // If init returns error stop further invocation and return the error message 
+                if (InitResult != null && InitResult.GetType().Equals(typeof(Unisys.Error)))
+                {
+                    Unisys.Error error = (Unisys.Error)InitResult;
+                    error.SessionAborted = true;
+                    error.MessageType = error.GetType().FullName;
+                    return error;
+                }
+            }
+
+            Unisys.DataSource dataSource = Unisys.Session.DataSource(HttpContext.Session.Id);
+
+
+            if (dataSource == null)
+            {
+				if (Sessionless)
+				{
+					string cmsg = "Connection failed";
+					Unisys.Error error = new Unisys.Error(cmsg, 3000, 2);
+					error.WebErrorMessage = cmsg;
+					error.SessionAborted = true;
+                    error.MessageType= error.GetType().FullName;
+					return error;
+				}
+				else
+				{
+					string cmsg = "Connect Required";
+					Unisys.Error error = new Unisys.Error(cmsg, 3000, 2);
+					error.WebErrorMessage = cmsg;
+					error.SessionAborted = true;
+                    error.MessageType= error.GetType().FullName;
+					return error;
+				}
+            }
+
+            Unisys.Message msg = null;
+            try
+            {
+                msg = dataSource.SendMessage(model);
+                if (msg!=null)
+                {
+                    Unisys.Session.Message(ISession.Id, msg);
+                    msg.MessageType= msg.GetType().FullName;
+
+                    if (msg.MessageClassName.Equals("RuntimeError"))
+                    {
+                        //Check for ErrorCode 2000, which means the host closed the connection
+                        //In that case, send a CloseRecord instead of a Runtime Error
+                        //This can happen if a BYE request is sent to an AB Suite application
+                        Unisys.Error errmsg = (Unisys.Error)msg;
+                        if (errmsg.ErrorCode == "2000")
+                        {
+                            Unisys.CloseRecord clr = new CloseRecord();
+                            clr.MessageType = typeof(CloseRecord).FullName;
+                            EndSession();
+                            return clr;
+                        }
+                        else
+                        {
+                            EndSession();
+                            return msg;
+                        }
+                     }
+                }
+                else
+                {
+                    string cmsg = "No Response from Host.";
+                    Unisys.Error error = new Unisys.Error(cmsg, 0, 0);
+                    error.WebErrorMessage = cmsg;
+                    error.SessionAborted = false;
+                    error.MessageType= error.GetType().FullName;
+                    return error;
+                }
+            }
+
+            catch (Unisys.Common.Runtime.ProcessOrch.OutOfOrderException)
+            {
+                string cmsg = "Unexpected Request: Expected - " + Unisys.Session.Message(ISession.Id).MessageClassName;
+                Unisys.Error error = new Unisys.Error(cmsg, 0, 0);
+                error.WebErrorMessage = cmsg;
+                error.SessionAborted = false;
+                error.MessageType= error.GetType().FullName;
+                return error;
+            }
+            catch (Exception ex)
+            {
+                string cmsg = "Internal Server error: Expected - " + ex.Message;
+                Unisys.Error error = new Unisys.Error(cmsg, 0, 0);
+                error.WebErrorMessage = cmsg;
+                error.SessionAborted = false;
+                error.MessageType= error.GetType().FullName;
+                return error;
+            }
+            finally
+            {
+				if (Sessionless)
+				{
+					dataSource.Disconnect();
+					EndSession();
+				}
+            }
+           return msg;
+         }
+
+		protected virtual void EndSession()
+		{
+			var ISession = HttpContext.Session;
+			Unisys.Session.End(ISession.Id);
+            ISession.Clear();
+		}
+
+        #endregion Host Connection
+
+<#    // If application requires a session, add connect and disconnect methods #>
+<#    if (config_SessionRequired) { #>
+        /// <summary>
+        /// <#= flow.OnSessionStart.Summary #>
+        /// </summary>
+<#        
+        string consumes = flow.OnSessionStart.Consumes;
+        if (!string.IsNullOrWhiteSpace(consumes)) { 
+            consumes = consumes.Replace(",","\",\"").Replace(" ","");
+#><#if (!string.IsNullOrWhiteSpace(consumes)) { #>
+        [Consumes("<#= consumes #>")] <#      } #>
+<#      } #>
+
+<#        
+        string produces = flow.OnSessionStart.Produces;
+        if (!string.IsNullOrWhiteSpace(produces)) { 
+            produces = produces.Replace(",","\",\"").Replace(" ","");
+#><#if (!string.IsNullOrWhiteSpace(produces)) { #>
+        [Produces("<#= produces #>")] <#      } #>
+
+<#      } #>
+<#
+        string verb = flow.OnSessionStart.Verb.ToString();
+        if (verb.Equals("Default"))
+            verb = config_verb;
+#>
+        [Http<#= verb #>]
+        <# replies = GetAllResponseTypes(flow.OnSessionStart, flow);
+                foreach (KeyValuePair<string, string> kvp in replies) {
+        #><#if(kvp.Value.StartsWith("Unisys."))
+    {#>[ProducesResponseType(<#= kvp.Key #>, Type = typeof(<#= kvp.Value #>))]
+    <#}else
+    {#>[ProducesResponseType(<#= kvp.Key #>, Type = typeof(<#= ModelName #>.<#= kvp.Value #>))]
+    <#}#>
+    <#}#>
+<#
+        // with start message
+                string binding = flow.OnSessionStart.Binding.ToString();
+            if (binding.Equals("Default"))
+                binding = "";
+            else
+                binding = "[From" + binding + "]";
+
+            string routeExt = flow.OnSessionStart.Route;
+
+            string[] sa;
+            if(string.IsNullOrEmpty(routeExt) && binding=="[FromRoute]")
+            {
+                List<KeyValuePair<string, string>> paramList = GetRouteMembers(flow.OnSessionStart.clientMessage);
+
+                if(string.IsNullOrEmpty(flow.OnSessionStart.clientMessage))
+                    routeExt = "Connect";
+                 else
+                 {
+                        sa = flow.OnSessionStart.clientMessage.Split('.');
+                        routeExt = sa[sa.Length - 1];
+                 }
+
+                foreach(KeyValuePair<string,string> kvp in paramList){           
+                    routeExt += "/{" + kvp.Value + "}";
+                }
+            }
+        else if(string.IsNullOrEmpty(routeExt))
+         {
+             if(string.IsNullOrEmpty(flow.OnSessionStart.clientMessage))
+                    routeExt = "Connect";
+                 else
+                 {
+                         sa = flow.OnSessionStart.clientMessage.Split('.');
+                        routeExt = sa[sa.Length - 1];
+                 }
+         }
+
+            SWopID= flow.OnSessionStart.OperationID;
+#>
+[Route("<#= routeExt #>")]
+        [SwaggerOperation(OperationId= "<#=SWopID#>")] 
+<#
+ if (string.IsNullOrWhiteSpace(flow.OnSessionStart.clientMessage)) { 
+#>
+        public virtual IActionResult <#= flow.OnSessionStart.OperationID #>()
+        {
+         Unisys.Message startMessage = null;
+<#
+        } else { #>
+        public virtual IActionResult <#= flow.OnSessionStart.OperationID #>(<#= binding #> <#= ModelName#>.<#= flow.OnSessionStart.clientMessage #> model)
+        {
+                    Unisys.Message startMessage = model;
+        <#
+            }
+#>
+
+            Unisys.Message msg = null;
+            var ISession = HttpContext.Session;
+
+            if (Unisys.Session.Message(ISession.Id) == null)
+            {
+                InitializeSession();
+
+                Unisys.DataSource dataSource = Unisys.Session.DataSource(ISession.Id);
+
+                msg = dataSource.Connect(startMessage);
+
+				if ( msg==null ||msg.MessageClassName.Equals("RuntimeError"))
+                {
+                    EndSession();
+                } 
+                else 
+                {
+					Unisys.Session.Message(ISession.Id, msg);
+				}
+            }
+            else
+            {
+                msg = Unisys.Session.Message(ISession.Id);
+            }
+
+             if (msg == null)
+            {
+                string cmsg = "Connection failed";
+                Unisys.Error error = new Unisys.Error(cmsg, 3000, 2);
+                error.WebErrorMessage = cmsg;
+                error.SessionAborted = true;
+                error.MessageType = error.GetType().FullName;
+                msg = error;
+            }
+
+           <# StringBuilder OrchestartedRsponseTypesCollection =  new StringBuilder();
+	        foreach (KeyValuePair<string, string> kvp in replies)
+	        {
+		        if(kvp.Value.StartsWith("Unisys."))
+		        {
+			        OrchestartedRsponseTypesCollection.AppendLine("actionResponseTypes.Add(new KeyValuePair<int, string>(" + kvp.Key +",\"" + kvp.Value + "\"));");
+		        }
+                else
+                {
+                  OrchestartedRsponseTypesCollection.AppendLine("actionResponseTypes.Add(new KeyValuePair<int, string>(" + kvp.Key +",\"" + ModelName  +"."+ kvp.Value + "\"));");
+                }
+	        }#>
+
+           bool specificReturnTypeFound = false;
+          <#
+            if(replies.Count > 0)
+            { #>
+            // Add action method level response types configuration
+            List<KeyValuePair<int, string>> actionResponseTypes = new List<KeyValuePair<int, string>>();
+            <#= OrchestartedRsponseTypesCollection.ToString() #>
+
+            // Based on response types annotation set HTTP response codes
+            if( actionResponseTypes != null )
+            {
+                // Based on response types annotation set HTTP response codes
+                var matchedResponseType = actionResponseTypes.Where(response => response.Value.Equals(msg.GetType().FullName)).ToList();
+
+                if (matchedResponseType.Count() > 0)
+                {
+                    msg._ResponseCode = matchedResponseType[0].Key;
+                    specificReturnTypeFound = true;
+                }
+            }
+             <# } #>
+            if(!specificReturnTypeFound)
+            {
+                // If no action method configuration found, based on global configuration set Set HTTP status code
+                var matchedResponseType = globalResponseTypes.Where(response => response.Value.Equals(msg.GetType().FullName)).ToList();
+
+                if (matchedResponseType.Count() > 0)
+                {
+                    msg._ResponseCode = matchedResponseType[0].Key;
+                }
+            }
+
+            msg.MessageType= msg.GetType().FullName;
+			ObjectResult objRslt = new ObjectResult(msg);
+			objRslt.StatusCode = msg._ResponseCode;
+			return objRslt;
+        }
+
+        /// <summary>
+        /// <#= flow.OnSessionEnd.Summary #>
+        /// </summary>
+<#
+         consumes = flow.OnSessionEnd.Consumes;
+        if (!string.IsNullOrWhiteSpace(consumes)) { 
+            consumes = consumes.Replace(",","\",\"").Replace(" ","");
+#><#if (!string.IsNullOrWhiteSpace(consumes)) { #>
+        [Consumes("<#= consumes #>")] <#      } #>
+<#      } #>
+
+<#        
+         produces = flow.OnSessionEnd.Produces;
+        if (!string.IsNullOrWhiteSpace(produces)) { 
+            produces = produces.Replace(",","\",\"").Replace(" ","");
+#><#if (!string.IsNullOrWhiteSpace(produces)) { #>
+        [Produces("<#= produces #>")] <#      } #>
+
+<#        } #>
+<#
+        verb = flow.OnSessionEnd.Verb.ToString();
+        if (verb.Equals("Default"))
+            verb = config_verb;
+#>
+        [Http<#= verb #>]
+        <#  replies = GetAllResponseTypes(flow.OnSessionEnd,flow);
+                foreach (KeyValuePair<string, string> kvp in replies) {
+        #><#if(kvp.Value.StartsWith("Unisys."))
+    {#>[ProducesResponseType(<#= kvp.Key #>, Type = typeof(<#= kvp.Value #>))]
+    <#}else
+    {#>[ProducesResponseType(<#= kvp.Key #>, Type = typeof(<#= ModelName #>.<#= kvp.Value #>))]
+    <#}#>
+    <#}#>
+[Route("<#= flow.OnSessionEnd.Route #>")]
+    <# 
+			SWopID = flow.OnSessionEnd.OperationID.Replace("_","").Trim();
+            SWopID=SWopID.Substring(0, 1).ToUpper() + SWopID.Substring(1);
+            // Check if the operation id is Disconnect. Replace it with DisConnect for backward compatibility
+            if (SWopID == "Disconnect")
+			    SWopID = "DisConnect";
+#>
+    [SwaggerOperation(OperationId= "<#=SWopID#>")] 
+        public virtual IActionResult <#= flow.OnSessionEnd.OperationID #>()
+        {
+            var ISession = HttpContext.Session;
+			EndSession();
+
+            Unisys.CloseRecord error = new Unisys.CloseRecord();
+            error.MessageType= error.GetType().FullName;
+            return Ok(error);
+        }
+
+<#
+    } // SessionRequired
+#>
+<#  // Enumerate through all top level activities, process all OnClientRequest activities
+    System.Collections.IEnumerator enumerator = flow.GetEnumerator();
+    if (enumerator != null)
+    {
+        while (enumerator.MoveNext())
+        {
+            BaseNode flownode = (BaseNode)enumerator.Current;
+            if (flownode.IsDisabled)
+                continue;
+            String typename = flownode.GetType().ToString();
+            String[] typenodes = typename.Split('.');
+            if (typenodes[typenodes.Length - 1].Equals("OnClientRequest"))
+            {
+                OnClientRequest request = (OnClientRequest)flownode;
+                // remove from list, as it is explicitly handled here
+                InList.Remove(request.clientMessage.Substring(request.clientMessage.LastIndexOf('.') + 1));
+#>
+        /// <summary>
+        /// <#= request.Summary #>
+        /// </summary>
+<#                
+        string consumes = request.Consumes;
+        if (!string.IsNullOrWhiteSpace(consumes)) { 
+            consumes = consumes.Replace(",","\",\"").Replace(" ","");
+#><#if (!string.IsNullOrWhiteSpace(consumes)) { #>
+        [Consumes("<#= consumes #>")] <#      } #>
+<#      } #>
+<#        
+        string produces = request.Produces;
+        if (!string.IsNullOrWhiteSpace(produces)) { 
+            produces = produces.Replace(",","\",\"").Replace(" ","");
+#><#if (!string.IsNullOrWhiteSpace(produces)) { #>
+        [Produces("<#= produces #>")] <#      } #>
+<#      } #>
+<#
+                string verb = request.Verb.ToString();
+                if (verb.Equals("Default"))
+                    verb = config_verb;
+#>
+<# if (!request.AllowAnonymous) { #>
+        <#= GetAuthorizeAttribute(request.Roles.ToString(), request.Policy.ToString(), request.Schemes.ToString()) #>
+<# } #>
+
+        [Http<#= verb #>]
+        <# 
+                replies = GetAllResponseTypes(request,flow);
+                foreach (KeyValuePair<string, string> kvp in replies) {
+        #><#if(kvp.Value.StartsWith("Unisys."))
+    {#>[ProducesResponseType(<#= kvp.Key #>, Type = typeof(<#= kvp.Value #>))]
+    <#}else
+    {#>[ProducesResponseType(<#= kvp.Key #>, Type = typeof(<#= ModelName #>.<#= kvp.Value #>))]
+    <#}#>
+    <#}#><#
+                string binding = request.Binding.ToString();
+                if (binding.Equals("Default"))
+                    binding = "";
+                else
+                    binding = "[From" + binding + "]";
+
+                string routeExt = request.Route;
+
+   
+
+                if(string.IsNullOrEmpty(routeExt) && binding=="[FromRoute]")
+                {
+                    // Default add client message name
+                    string[] sa = request.clientMessage.Split('.');
+                    routeExt = sa[sa.Length - 1];
+
+                    List<KeyValuePair<string, string>> paramList = GetRouteMembers(request.clientMessage);
+                    foreach(KeyValuePair<string,string> kvp in paramList){           
+                        routeExt += "/{" + kvp.Value + "}";
+                    }
+                }
+                else if(string.IsNullOrEmpty(routeExt))
+                {
+                      // Default add client message name
+                    string[] sa = request.clientMessage.Split('.');
+                    routeExt = sa[sa.Length - 1];
+                }
+
+
+			SWopID = request.OperationID.Replace("_","").Trim();
+            SWopID=SWopID.Substring(0, 1).ToUpper() + SWopID.Substring(1);
+#>
+[Route("<#= routeExt #>")]
+        [SwaggerOperation(OperationId= "<#=SWopID#>")] 
+        public virtual IActionResult <#= request.OperationID #>(<#= binding #> <#= ModelName#>.<#= request.clientMessage #> model)
+        {
+        <# 
+         StringBuilder OrchestartedRsponseTypesCollection =  new StringBuilder();
+	        foreach (KeyValuePair<string, string> kvp in replies)
+	        {
+		        if(kvp.Value.StartsWith("Unisys."))
+		        {
+			        OrchestartedRsponseTypesCollection.AppendLine("actionResponseTypes.Add(new KeyValuePair<int, string>(" + kvp.Key +",\"" + kvp.Value + "\"));");
+		        }
+                else
+                {
+                  OrchestartedRsponseTypesCollection.AppendLine("actionResponseTypes.Add(new KeyValuePair<int, string>(" + kvp.Key +",\"" + ModelName  +"."+ kvp.Value + "\"));");
+                }
+	        }#><# 
+            if(replies.Count > 0)
+            { #>
+    // Add action method level response types configuration
+            List<KeyValuePair<int, string>> actionResponseTypes = new List<KeyValuePair<int, string>>();
+            <#= OrchestartedRsponseTypesCollection.ToString() #>
+            return Invoke(model,actionResponseTypes);<# }else{#>return Invoke(model,null);<#}#>
+
+        }
+
+<#           
+
+
+		if (isABSEAE && config_GenerateABSuiteListActions)
+		{
+			ProcessLists(request.clientMessage, ref ABSuiteApplicationLists);
+
+			foreach(ListDetailsItem ldItem in ABSuiteApplicationLists){  
+			
+            SWopID=ldItem.ListName.Substring(0, 1).ToUpper() + ldItem.ListName.Substring(1);
+
+#>
+        /// <summary>
+        /// Sends the message to the datasource and returns a List response
+        /// </summary>   
+        /// GET api/<#=Controllername#>/List/<#=ldItem.ListName #> 
+        [HttpGet]
+        [Route("List/<#=ldItem.ListName #>")]
+        [ProducesResponseType(200, Type = typeof(<#= ModelName #>.Server.<#= ldItem.MessageName #>.<#=ldItem.ListType#>Type))]
+        [SwaggerOperation(OperationId= "<#=SWopID #>")] 
+        public IActionResult <#=ldItem.ListName #>()
+        {
+            var ISession = HttpContext.Session;
+            ObjectResult rslt;
+
+
+            if (Sessionless)
+            {
+                Unisys.Message InitResult = SessionlessInit();
+            }
+
+            Unisys.DataSource dataSource = Unisys.Session.DataSource(HttpContext.Session.Id);
+            IEnumerable<<#= ModelName #>.Server.<#= ldItem.MessageName #>.<#=ldItem.ListType#>Type> sList = null;
+
+            if (dataSource == null)
+            {
+                if (Sessionless)
+                {
+                    string cmsg = "Connection failed";
+                    Unisys.Error error = new Unisys.Error(cmsg, 3000, 2);
+                    error.WebErrorMessage = cmsg;
+                    error.SessionAborted = true;
+                    error.MessageType = error.GetType().FullName;
+
+                    rslt = new ObjectResult(error);
+                    rslt.StatusCode = 401;
+                    return rslt;
+                }
+                else
+                {
+                    string cmsg = "Connect Required";
+                    Unisys.Error error = new Unisys.Error(cmsg, 3000, 2);
+                    error.WebErrorMessage = cmsg;
+                    error.SessionAborted = true;
+                    error.MessageType = error.GetType().FullName;
+
+                    rslt = new ObjectResult(error);
+                    rslt.StatusCode = 412;
+                    return rslt;
+                }
+            }
+
+           try
+            {
+                Unisys.Component comp = (Unisys.Component)dataSource;
+                System.Data.DataTable dt = Unisys.ABSuiteEAE.Connector.ABSuiteEAEConnection.GetList(comp,"<#=ldItem.HostListName#>", "<#=ldItem.ListFormat#>", <#=ldItem.HostColumnValue.ToString()#>, <#=ldItem.DisplayColumnValue.ToString()#>);
+
+                if (dt != null)
+                {
+                    sList = dt.AsEnumerable().Select(x => new <#= ModelName #>.Server.<#= ldItem.MessageName #>.<#=ldItem.ListType#>Type()
+                    {
+                        <#= ldItem.HostColumnName #> = x.Field<string>("HostColumn"),
+                        <#= ldItem.DisplayColumnName #> = x.Field<string>("DisplayColumn")
+                    }).ToList();
+
+ 					ObjectResult objRslt = new ObjectResult(dt);
+                    objRslt.StatusCode = 200;
+                    return objRslt;
+                }
+                else
+                {
+                    string cmsg = "List not found: " + "<#=ldItem.ListName + '(' + ldItem.HostListName + ')'#>";
+                    Unisys.Error error = new Unisys.Error(cmsg, 0, 0);
+                    error.WebErrorMessage = cmsg;
+                    error.SessionAborted = false;
+                    
+                    error.MessageType = error.GetType().FullName;
+                    rslt = new ObjectResult(error);
+                    rslt.StatusCode = 404;
+
+                    return rslt;
+                }
+
+            }
+
+            catch (Unisys.Common.Runtime.ProcessOrch.ConnectorException)
+            {
+                string cmsg = "GetList Exception: " + "<#=ldItem.ListName+ '(' + ldItem.HostListName + ')'#>";
+                Unisys.Error error = new Unisys.Error(cmsg, 0, 0);
+                error.WebErrorMessage = cmsg;
+                error.SessionAborted = false;
+                error.MessageType = error.GetType().FullName;
+
+                rslt = new ObjectResult(error);
+                rslt.StatusCode = 500;
+
+                return rslt;
+            }
+            finally
+            {
+                if (Sessionless)
+                {
+                    dataSource.Disconnect();
+                    EndSession();
+                }
+            }
+        }
+
+	<#
+			}// for each kvp in application lists
+			ABSuiteApplicationLists.Clear(); 
+
+		} // isABSEAE and config_GenerateABSuiteListActions
+
+             } //if typenodes
+        } // while
+#>
+<#  } // if enumerator #>
+<#
+
+  // Add a default Action Method for unorchestrated input Client Messages
+	if (config_IncludeAllClientMessages)
+    {
+		foreach (string inputmessage in InList) 
+        {
+
+        if (!string.IsNullOrEmpty(inputmessage))
+		{
+
+            Unisys.Common.EISConnectors.EISRecord clientMessageRecord = GetClientMessageEISRecord(inputmessage);
+#>
+        /// <summary>
+        /// <#= clientMessageRecord.Description#>
+        /// </summary>
+        <#
+                        string verb = config_verb;
+        #>
+[Http<#= verb #>]
+<#
+			//*** Binding & Route members Handling
+			string binding = config_binding;
+                   binding = "[From" + binding + "]";
+			SWopID = clientMessageRecord.OperationID.Replace("_","").Trim();
+            SWopID=SWopID.Substring(0, 1).ToUpper() + SWopID.Substring(1);
+ #>
+        [Route("<#= clientMessageRecord.Route #>")]
+        [SwaggerOperation(OperationId= "<#=SWopID#>")] 
+        public virtual IActionResult <#= clientMessageRecord.OperationID #>(<#= binding #> <#= ModelName#>.Client.<#= inputmessage #> model)
+        {
+                return Invoke(model,null);
+        }
+
+<#
+			if (string.Equals(inputmessage,"_SelectIspec", StringComparison.CurrentCultureIgnoreCase))
+				continue; //Skip the SelectIspec message
+       
+		if (isABSEAE && config_GenerateABSuiteListActions)
+		{
+			ProcessLists(inputmessage, ref ABSuiteApplicationLists);
+
+			foreach(ListDetailsItem ldItem in ABSuiteApplicationLists){  
+			
+            SWopID=ldItem.ListName.Substring(0, 1).ToUpper() + ldItem.ListName.Substring(1);
+
+#>
+        /// <summary>
+        /// Sends the message to the datasource and returns a List response
+        /// </summary>   
+        /// GET api/<#=Controllername#>/List/<#=ldItem.ListName #> 
+        [HttpGet]
+        [Route("List/<#=ldItem.ListName #>")]
+        [ProducesResponseType(200, Type = typeof(<#= ModelName #>.Server.<#= ldItem.MessageName #>.<#=ldItem.ListType#>Type))]
+        [SwaggerOperation(OperationId= "<#=SWopID #>")] 
+        public IActionResult <#=ldItem.ListName #>()
+        {
+            var ISession = HttpContext.Session;
+            ObjectResult rslt;
+
+
+            if (Sessionless)
+            {
+                Unisys.Message InitResult = SessionlessInit();
+            }
+
+            Unisys.DataSource dataSource = Unisys.Session.DataSource(HttpContext.Session.Id);
+            IEnumerable<<#= ModelName #>.Server.<#= ldItem.MessageName #>.<#=ldItem.ListType#>Type> sList = null;
+
+            if (dataSource == null)
+            {
+                if (Sessionless)
+                {
+                    string cmsg = "Connection failed";
+                    Unisys.Error error = new Unisys.Error(cmsg, 3000, 2);
+                    error.WebErrorMessage = cmsg;
+                    error.SessionAborted = true;
+                    error.MessageType = error.GetType().FullName;
+
+                    rslt = new ObjectResult(error);
+                    rslt.StatusCode = 401;
+                    return rslt;
+                }
+                else
+                {
+                    string cmsg = "Connect Required";
+                    Unisys.Error error = new Unisys.Error(cmsg, 3000, 2);
+                    error.WebErrorMessage = cmsg;
+                    error.SessionAborted = true;
+                    error.MessageType = error.GetType().FullName;
+
+                    rslt = new ObjectResult(error);
+                    rslt.StatusCode = 412;
+                    return rslt;
+                }
+            }
+
+           try
+            {
+                Unisys.Component comp = (Unisys.Component)dataSource;
+                System.Data.DataTable dt = Unisys.ABSuiteEAE.Connector.ABSuiteEAEConnection.GetList(comp,"<#=ldItem.HostListName#>", "<#=ldItem.ListFormat#>", <#=ldItem.HostColumnValue.ToString()#>, <#=ldItem.DisplayColumnValue.ToString()#>);
+
+                if (dt != null)
+                {
+                    sList = dt.AsEnumerable().Select(x => new <#= ModelName #>.Server.<#= ldItem.MessageName #>.<#=ldItem.ListType#>Type()
+                    {
+                        <#= ldItem.HostColumnName #> = x.Field<string>("HostColumn"),
+                        <#= ldItem.DisplayColumnName #> = x.Field<string>("DisplayColumn")
+                    }).ToList();
+
+					ObjectResult objRslt = new ObjectResult(dt);
+					objRslt.StatusCode = 200;
+					return objRslt;
+                }
+                else
+                {
+                    string cmsg = "List not found: " + "<#=ldItem.ListName + '(' + ldItem.HostListName + ')'#>";
+                    Unisys.Error error = new Unisys.Error(cmsg, 0, 0);
+                    error.WebErrorMessage = cmsg;
+                    error.SessionAborted = false;
+                    
+                    error.MessageType = error.GetType().FullName;
+                    rslt = new ObjectResult(error);
+                    rslt.StatusCode = 404;
+
+                    return rslt;
+                }
+
+            }
+
+            catch (Unisys.Common.Runtime.ProcessOrch.ConnectorException)
+            {
+                string cmsg = "GetList Exception: " + "<#=ldItem.ListName+ '(' + ldItem.HostListName + ')'#>";
+                Unisys.Error error = new Unisys.Error(cmsg, 0, 0);
+                error.WebErrorMessage = cmsg;
+                error.SessionAborted = false;
+                error.MessageType = error.GetType().FullName;
+
+                rslt = new ObjectResult(error);
+                rslt.StatusCode = 500;
+
+                return rslt;
+            }
+            finally
+            {
+                if (Sessionless)
+                {
+                    dataSource.Disconnect();
+                    EndSession();
+                }
+            }
+
+        }
+
+	<#
+			}// for each kvp in application lists
+			ABSuiteApplicationLists.Clear(); 
+
+		} // isABSEAE and config_GenerateABSuiteListActions
+
+	} // inputmessage !(Null or Empty)
+ } //foreach
+
+		if (isABSEAE)
+		{
+	#>
+
+      
+		/// <summary>
+        /// Sends the message to the datasource and returns a response
+        /// </summary>   
+        /// GET api/<#=Controllername#>/list?listname= (Name of List), dc=(Display Column), hc= (Host Column), listFormat= (column numbers to concatenate), useColumnNamesFromList=(true/false)
+        [HttpGet]
+        [Route("List")]
+        [ProducesResponseType(200, Type = typeof(object))]
+        [SwaggerOperation(OperationId= "List")] 
+
+        public IActionResult List([FromQuery] string listName, [FromQuery] int displayColumn, [FromQuery] int hostColumn, [FromQuery] string listFormat, [FromQuery] bool useColumnNamesFromList)
+        {
+            var ISession = HttpContext.Session;
+            ObjectResult rslt;
+            System.Data.DataTable dt;
+
+            if (listFormat == null)
+                listFormat = "";
+
+            if (hostColumn == 0)
+                hostColumn = 1;
+
+            if (displayColumn == 0)
+                displayColumn = 2;
+
+            if (Sessionless)
+            {
+                Unisys.Message InitResult = SessionlessInit();
+            }
+
+            Unisys.DataSource dataSource = Unisys.Session.DataSource(HttpContext.Session.Id);
+
+            if (dataSource == null)
+            {
+                if (Sessionless)
+                {
+                    string cmsg = "Connection failed";
+                    Unisys.Error error = new Unisys.Error(cmsg, 3000, 2);
+                    error.WebErrorMessage = cmsg;
+                    error.SessionAborted = true;
+                    error.MessageType = error.GetType().FullName;
+
+                    rslt = new ObjectResult(error);
+                    rslt.StatusCode = 401;
+                    return rslt;
+                }
+                else
+                {
+                    string cmsg = "Connect Required";
+                    Unisys.Error error = new Unisys.Error(cmsg, 3000, 2);
+                    error.WebErrorMessage = cmsg;
+                    error.SessionAborted = true;
+                    error.MessageType = error.GetType().FullName;
+
+                    rslt = new ObjectResult(error);
+                    rslt.StatusCode = 412;
+                    return rslt;
+                }
+            }
+
+            try
+            {
+                Unisys.Component comp = (Unisys.Component)dataSource;
+                dt = Unisys.ABSuiteEAE.Connector.ABSuiteEAEConnection.GetList(comp, listName, listFormat, hostColumn, displayColumn);
+
+                if (dt != null)
+                {
+                    if (dt.Rows.Count > 0 && useColumnNamesFromList)
+                    {
+                        // We have a datatable that uses separate columns and does not have a specific
+                        // List type associated. If useColumnNamesFromList is true, then use the data in the first
+                        // row of the datatable as column headers. This sends the list back with meaningful item
+                        // names in the list, instead of the default "ColumnX" names.
+
+                        for (int x = 0; x < dt.Columns.Count; x++)
+                        {
+                            DataColumn dc = dt.Columns[x];
+                            DataRow dr = dt.Rows[0];
+                            dc.ColumnName = (string)dr[x];
+                        }
+
+                        // Delete the Header row from the table
+                        dt.Rows[0].Delete();
+                    }
+                }
+                else
+                {
+                    string cmsg = "List not found: " + listName;
+                    Unisys.Error error = new Unisys.Error(cmsg, 0, 0);
+                    error.WebErrorMessage = cmsg;
+                    error.SessionAborted = false;
+                    error.MessageType = error.GetType().FullName;
+
+                    rslt = new ObjectResult(error);
+                    rslt.StatusCode = 404;
+
+                    return rslt;
+                }
+
+            }
+
+            catch (Unisys.Common.Runtime.ProcessOrch.ConnectorException)
+            {
+                string cmsg = "GetList Exception: " + listName;
+                Unisys.Error error = new Unisys.Error(cmsg, 0, 0);
+                error.WebErrorMessage = cmsg;
+                error.SessionAborted = false;
+                error.MessageType = error.GetType().FullName;
+
+                rslt = new ObjectResult(error);
+                rslt.StatusCode = 500;
+
+                return rslt;
+            }
+            finally
+            {
+                if (Sessionless)
+                {
+                    dataSource.Disconnect();
+                    EndSession();
+                }
+            }
+
+			ObjectResult objRslt = new ObjectResult(dt);
+			objRslt.StatusCode = 200;
+			return objRslt;
+        }
+		<#
+		}
+
+		if (isABSEAE && config_GenerateABSuiteListActions)
+		{
+			foreach(ListDetailsItem ldItem in ABSuiteApplicationLists){  
+
+            SWopID=ldItem.ListName.Substring(0, 1).ToUpper() + ldItem.ListName.Substring(1);
+#>
+        /// <summary>
+        /// Sends the message to the datasource and returns a List response
+        /// </summary>   
+        /// GET api/<#=Controllername#>/List/<#=ldItem.ListName #> 
+        [HttpGet]
+        [Route("List/<#=ldItem.ListName #>")]
+        [ProducesResponseType(200, Type = typeof(<#= ModelName #>.Server.<#= ldItem.MessageName #>.<#=ldItem.ListType#>Type))]
+        [SwaggerOperation(OperationId= "<#=SWopID#>")] 
+
+        public IActionResult <#=ldItem.ListName #>()
+        {
+            var ISession = HttpContext.Session;
+            ObjectResult rslt;
+
+            if (Sessionless)
+            {
+                Unisys.Message InitResult = SessionlessInit();
+            }
+
+            Unisys.DataSource dataSource = Unisys.Session.DataSource(HttpContext.Session.Id);
+            IEnumerable<<#= ModelName #>.Server.<#= ldItem.MessageName #>.<#=ldItem.ListType#>Type> sList = null;
+
+            if (dataSource == null)
+            {
+                if (Sessionless)
+                {
+                    string cmsg = "Connection failed";
+                    Unisys.Error error = new Unisys.Error(cmsg, 3000, 2);
+                    error.WebErrorMessage = cmsg;
+                    error.SessionAborted = true;
+
+                    rslt = new ObjectResult(error);
+                    rslt.StatusCode = 401;
+                    return rslt;
+                }
+                else
+                {
+                    string cmsg = "Connect Required";
+                    Unisys.Error error = new Unisys.Error(cmsg, 3000, 2);
+                    error.WebErrorMessage = cmsg;
+                    error.SessionAborted = true;
+
+                    rslt = new ObjectResult(error);
+                    rslt.StatusCode = 412;
+                    return rslt;
+                }
+            }
+
+            try
+            {
+                Unisys.Component comp = (Unisys.Component)dataSource;
+                System.Data.DataTable dt = Unisys.ABSuiteEAE.Connector.ABSuiteEAEConnection.GetList(comp,"<#=ldItem.HostListName#>", "<#=ldItem.ListFormat#>", <#=ldItem.HostColumnValue.ToString()#>, <#=ldItem.DisplayColumnValue.ToString()#>);
+
+                if (dt != null)
+                {
+                    sList = dt.AsEnumerable().Select(x => new <#= ModelName #>.Server.<#= ldItem.MessageName #>.<#=ldItem.ListType#>Type()
+                    {
+                        <#= ldItem.HostColumnName #> = x.Field<string>("HostColumn"),
+                        <#= ldItem.DisplayColumnName #> = x.Field<string>("DisplayColumn")
+                    }).ToList();
+                }
+                else
+                {
+                    string cmsg = "List not found: " + "<#=ldItem.ListName + '(' + ldItem.HostListName + ')'#>";
+                    Unisys.Error error = new Unisys.Error(cmsg, 0, 0);
+                    error.WebErrorMessage = cmsg;
+                    error.SessionAborted = false;
+                    
+                    rslt = new ObjectResult(error);
+                    rslt.StatusCode =  404;
+
+                    return rslt;
+                }
+
+            }
+
+            catch (Unisys.Common.Runtime.ProcessOrch.ConnectorException)
+            {
+                string cmsg = "GetList Exception: " + "<#=ldItem.ListName+ '(' + ldItem.HostListName + ')'#>";
+                Unisys.Error error = new Unisys.Error(cmsg, 0, 0);
+                error.WebErrorMessage = cmsg;
+                error.SessionAborted = false;
+
+                rslt = new ObjectResult(error);
+                rslt.StatusCode = 500;
+
+                return rslt;
+            }
+            finally
+            {
+                if (Sessionless)
+                {
+                    dataSource.Disconnect();
+                    EndSession();
+                }
+            }
+
+			ObjectResult objRslt = new ObjectResult(sList);
+			objRslt.StatusCode = 200;
+			return objRslt;
+
+         }
+<#
+			}// for each kvp in application lists
+		} // genSpecificLists
+    } // if IncludeAllClientMessages
+#>
+  
+    
+ }
+}
+
+
+<#+
+
+	public class ListDetailsItem 
+    {
+        public string ListName { get; set; }
+        public string ListType { get; set; }
+		public string MessageName {get; set;}
+		public string HostColumnName {get; set;}
+		public string DisplayColumnName {get; set;}
+		public int HostColumnValue {get; set;}
+		public int DisplayColumnValue {get; set;}
+		public string ListFormat {get; set;}		
+		public string HostListName { get; set; }
+
+		
+
+        public ListDetailsItem(string lName, string lType, string mName, string hcName, string dcName, int hcValue, int dcValue, string lFormat, string hlName)
+        {
+            ListName = lName;
+            ListType = lType;
+			MessageName = mName;
+			HostColumnName = hcName;
+			DisplayColumnName = dcName;
+			HostColumnValue = hcValue;
+			DisplayColumnValue = dcValue;
+			ListFormat = lFormat;
+			HostListName = hlName;
+        }
+    }
+
+    /// <summary>
+    /// For a given message, finds any list definitions in the message and adds them to returns a List of KeyValuePairs where the Key is the type and
+    /// the Value is the name, of the members of the mesage class.
+    /// </summary>
+    /// <param name="message"></param>
+    /// <returns>List of List Types</returns>
+    void ProcessLists(string message, ref List<ListDetailsItem> applicationLists)
+    {
+        string mName = message.Substring(message.IndexOf('.') + 1);
+   		string serverMessage = System.IO.Path.Combine(ServerMessagesPath, mName + ".eprec");
+        
+        if (System.IO.File.Exists(serverMessage))
+        {
+            Unisys.Common.EISConnectors.EISRecord record = Unisys.Common.EISConnectors.EISRecord.Deserialize(serverMessage);
+
+            foreach (EISElement element in record.Elements) {
+
+                if (!(element is EISRecordField))
+                    continue; // Only interested in potential list definitions
+
+    			EISRecordField tmpRecField = (EISRecordField)element;			
+			    string dtype = tmpRecField.name;
+		    	string hcName = "";
+	    		string dcName = "";
+
+    			for (int x = 0; x < tmpRecField.Elements.Count; x++)
+			    {
+		    		EISRecord eisRec = (EISRecord)tmpRecField.Elements[x];
+	    			if (eisRec.name == dtype + "Type")
+    				{
+				    	foreach(EISElement ef in eisRec.Elements)
+			    		{
+		    				if(ef is EISField)
+	    					{
+    							if (ef.name=="HostColumn")
+							    	hcName = ((EISField)ef).userName;
+						    	if (ef.name=="DisplayColumn")
+					    			dcName = ((EISField)ef).userName;
+				    		}
+			    		}
+				
+		    		}
+	    		}
+
+		    	foreach (EISElement elm in record.Elements) {
+	    			if (elm is EISField)
+    				{
+				    	if (((EISField)elm).DataSourceId == dtype)
+			    		{
+		    			    bool bListFound = false; 
+                            foreach (ListDetailsItem ld in applicationLists)
+                            {
+                                //Check for duplicate lists. Break if the listname is already present
+                                if (ld.HostListName == ((EISField)elm).ListName)
+				    			{
+			    					bListFound = true; 
+                                    break;
+	    						}
+                            }
+
+                            // Only add the list if it is not already present
+                            if(!bListFound)
+						        applicationLists.Add(new ListDetailsItem((((EISField)elm).ListName.Replace('.', '_').Replace("*", "STAR")),((EISRecordField)element).userName, mName, hcName, dcName, ((EISField)elm).HostColumn, ((EISField)elm).DisplayColumn, ((EISField)elm).ListFormat, ((EISField)elm).ListName));
+					    }
+				    }   
+			    }
+            }
+        }
+    }
+    
+
+    
+	/// <summary>
+    /// For a give message, returns a List of KeyValuePairs where the Key is the type and
+    /// the Value is the name, of the members of the message class.
+    /// </summary>
+    /// <param name="message"></param>
+    /// <returns>List of KeyValuePairs</returns>
+    List<KeyValuePair<string, string>> GetRouteMembers(string message)
+    {
+        string mName = message.Substring(message.IndexOf('.') + 1);
+        Unisys.Common.EISConnectors.EISRecord record = Unisys.Common.EISConnectors.EISRecord.Deserialize(System.IO.Path.Combine(ClientMessagesPath, mName + ".eprec"));
+        return GetRouteMembers(record, message);
+    }
+
+    /// <summary>
+    /// Returns EISRecord
+    /// </summary>
+    /// <param name="message">Client message name</param>
+    /// <returns>EISRecord</returns>
+    Unisys.Common.EISConnectors.EISRecord GetClientMessageEISRecord(string message)
+    {
+        string mName = message.Substring(message.IndexOf('.') + 1);
+        Unisys.Common.EISConnectors.EISRecord record = Unisys.Common.EISConnectors.EISRecord.Deserialize(System.IO.Path.Combine(ClientMessagesPath, mName + ".eprec"));
+        return record;
+    }
+
+
+
+    List<KeyValuePair<string, string>> GetRouteMembers(Unisys.Common.EISConnectors.EISRecord record, string message) {
+    List<KeyValuePair<string, string>> routeParams = new List<KeyValuePair<string, string>>();
+    try
+    {
+           
+            foreach (EISElement element in record.Elements) {
+                if (element is EISField && ((EISField)element).IsArray)
+                    continue;
+
+                if (element is EISByteArrayField)
+                    continue;
+
+                if (element is EISRecordField)
+                    // should recursively call to get descendant records
+                    continue;
+
+                // must be a field
+                if (!((EISField)element).includeInMarkup)
+                    continue;
+
+                if (((EISField)element).fieldType == fieldType.Constant)
+                    continue;
+
+                if (!(((EISField)element).fieldType == fieldType.Input) &&
+                        !(((EISField)element).fieldType == fieldType.InputOutput))
+                    continue;
+
+                Unisys.Common.EISConnectors.DataType datatype = ((EISField)element).DataType;
+                string dtype = Unisys.Common.EISConnectors.Converter.ConvertDataType(datatype);
+
+                if (((EISField)element).IsEnum)
+                {
+                    EISEnum enumField = ((EISField)element).Enum;
+                    if (enumField.External)
+                    {
+                        dtype = ModelName + "." + enumField.ExternalReference;
+                    }
+                    else
+                    {
+                        dtype = message + "." + enumField.userName;
+                    }
+
+                }
+
+                routeParams.Add(new KeyValuePair<string, string>(dtype, ((EISField)element).userName));
+            }
+        }
+        catch(Exception ex)
+        {
+            Unisys.Common.Shared.Logging.WriteLogs(Logging.LogLevel.Error,"Exception :" + ex.Message);
+        }
+        return routeParams;
+    }
+
+    /// <summary>
+    /// Creates an Authorize attribute with required properties
+    /// </summary>
+    /// <param name="roles">Roles</param>
+    /// <param name="policy">Policy</param>
+    /// <param name="authenticationSchemes">Authentication Schemes</param>
+    /// <returns></returns>
+    private string GetAuthorizeAttribute(string roles, string policy, string authenticationSchemes)
+    {
+        const string authorize = "[Authorize({0})]";
+        string properties = string.Empty;
+
+        if (!string.IsNullOrWhiteSpace(roles))
+        {
+            properties += string.Format("Roles = \"{0}\"", roles);
+        }
+
+        if (!string.IsNullOrWhiteSpace(policy))
+        {
+            properties += (string.IsNullOrWhiteSpace(properties) ? string.Format("Policy = \"{0}\"", policy) : string.Format(", Policy = \"{0}\"", policy));
+        }
+
+        if (!string.IsNullOrWhiteSpace(authenticationSchemes))
+        {
+            properties += (string.IsNullOrWhiteSpace(properties) ? string.Format("AuthenticationSchemes = \"{0}\"", authenticationSchemes) :
+                string.Format(", AuthenticationSchemes = \"{0}\"", authenticationSchemes));
+        }
+
+        return string.Format(authorize, properties);
+    }
+
+    /// <summary>
+    /// GetAllResponseTypes for Message Handler
+    /// </summary>
+    /// <param name="request"></param>
+    /// <returns></returns>
+    List<KeyValuePair<string, string>> GetAllResponseTypes(Unisys.Common.Orchestration.OnClientRequest request, Unisys.Common.Orchestration.Flow global)
+    {
+        List<KeyValuePair<string, string>> defaultreplies = GetAllResponseTypes(global);
+        bool defaultMessage = false;
+
+        List<KeyValuePair<string, string>> replies = new List<KeyValuePair<string, string>>();
+        foreach (var item in request.ResponseTypes)
+        {
+            defaultMessage = false;
+           foreach(var reply in defaultreplies)
+           {
+                if((reply.Key==item.StatusCode.ToString() && reply.Value ==item.ResponseType))
+                {
+                  defaultMessage = true;
+                  break;
+                }
+           }
+
+           if(!defaultMessage)
+           replies.Add(new KeyValuePair<string, string>(item.StatusCode.ToString(), item.ResponseType));
+            
+        } 
+
+      return replies;
+    }
+
+
+    /// <summary>
+    /// GetAllResponseTypes for Message Handler
+    /// </summary>
+    /// <param name="request"></param>
+    /// <returns></returns>
+    List<KeyValuePair<string, string>> GetAllResponseTypes(Unisys.Common.Orchestration.OnSessionStart request, Unisys.Common.Orchestration.Flow global)
+    {
+        List<KeyValuePair<string, string>> defaultreplies = GetAllResponseTypes(global);
+        bool defaultMessage = false;
+
+        List<KeyValuePair<string, string>> replies = new List<KeyValuePair<string, string>>();
+        foreach (var item in request.ResponseTypes)
+        {
+            defaultMessage = false;
+           foreach(var reply in defaultreplies)
+           {
+                if((reply.Key==item.StatusCode.ToString() && reply.Value ==item.ResponseType))
+                {
+                  defaultMessage = true;
+                  break;
+                }
+           }
+
+           if(!defaultMessage)
+           replies.Add(new KeyValuePair<string, string>(item.StatusCode.ToString(), item.ResponseType));
+            
+        } 
+
+      return replies;
+    }
+
+
+        /// <summary>
+    /// GetAllResponseTypes for Message Handler
+    /// </summary>
+    /// <param name="request"></param>
+    /// <returns></returns>
+    List<KeyValuePair<string, string>> GetAllResponseTypes(Unisys.Common.Orchestration.OnSessionEnd request, Unisys.Common.Orchestration.Flow global)
+    {
+        List<KeyValuePair<string, string>> defaultreplies = GetAllResponseTypes(global);
+        bool defaultMessage = false;
+
+        List<KeyValuePair<string, string>> replies = new List<KeyValuePair<string, string>>();
+        foreach (var item in request.ResponseTypes)
+        {
+           defaultMessage = false;
+           foreach(var reply in defaultreplies)
+           {
+                if((reply.Key==item.StatusCode.ToString() && reply.Value ==item.ResponseType))
+                {
+                  defaultMessage = true;
+                  break;
+                }
+           }
+
+           if(!defaultMessage)
+           replies.Add(new KeyValuePair<string, string>(item.StatusCode.ToString(), item.ResponseType));
+            
+        } 
+
+      return replies;
+    }
+
+    /// <summary>
+    /// GetAllResponseTypes for Message Handler
+    /// </summary>
+    /// <param name="request"></param>
+    /// <returns></returns>
+    List<KeyValuePair<string, string>> GetAllResponseTypes(Unisys.Common.EISConnectors.EISRecord request, Unisys.Common.Orchestration.Flow global)
+    {
+        List<KeyValuePair<string, string>> defaultreplies = GetAllResponseTypes(global);
+        bool defaultMessage = false;
+
+        List<KeyValuePair<string, string>> replies = new List<KeyValuePair<string, string>>();
+        foreach (var item in request.ResponseTypes)
+        {
+            defaultMessage = false;
+           foreach(var reply in defaultreplies)
+           {
+                if((reply.Key==item.StatusCode.ToString() && reply.Value ==item.ResponseType))
+                {
+                  defaultMessage = true;
+                  break;
+                }
+           }
+
+           if(!defaultMessage)
+           replies.Add(new KeyValuePair<string, string>(item.StatusCode.ToString(), item.ResponseType));
+            
+        } 
+
+      return replies;
+    }
+
+
+        /// <summary>
+    /// GetAllResponseTypes for Message Handler
+    /// </summary>
+    /// <param name="request"></param>
+    /// <returns></returns>
+    List<KeyValuePair<string, string>> GetAllResponseTypes(Unisys.Common.Orchestration.Flow request )
+    {
+        List<KeyValuePair<string, string>> replies = new List<KeyValuePair<string, string>>();
+        foreach (var item in request.ResponseTypes)
+        {
+           replies.Add(new KeyValuePair<string, string>(item.StatusCode.ToString(), item.ResponseType));
+            
+        } 
+
+      return replies;
+    }
+#>
